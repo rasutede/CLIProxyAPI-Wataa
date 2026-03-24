@@ -1,7 +1,7 @@
 package executor
 
 import (
-	"bufio"
+
 	"bytes"
 	"context"
 	"fmt"
@@ -269,34 +269,33 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				log.Errorf("openai compat executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+		sseReader := NewSSELineReader(httpResp.Body)
 		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			appendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := parseOpenAIStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
-			}
-			if len(line) == 0 {
-				continue
-			}
+		for {
+			line, errRead := sseReader.ReadLine()
+			if line != nil {
+				appendAPIResponseChunk(ctx, e.cfg, line)
+				if detail, ok := parseOpenAIStreamUsage(line); ok {
+					reporter.publish(ctx, detail)
+				}
 
-			if !bytes.HasPrefix(line, []byte("data:")) {
-				continue
+				if bytes.HasPrefix(line, []byte("data:")) {
+					// OpenAI-compatible streams are SSE: lines typically prefixed with "data: ".
+					// Pass through translator; it yields one or more chunks for the target schema.
+					chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, line, &param)
+					for i := range chunks {
+						out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+					}
+				}
 			}
-
-			// OpenAI-compatible streams are SSE: lines typically prefixed with "data: ".
-			// Pass through translator; it yields one or more chunks for the target schema.
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(line), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+			if errRead != nil {
+				if errRead != io.EOF {
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					reporter.publishFailure(ctx)
+					out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				}
+				break
 			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 		// Ensure we record the request if no usage chunk was ever seen
 		reporter.ensurePublished(ctx)

@@ -393,10 +393,38 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		// If from == to (Claude → Claude), directly forward the SSE stream without translation
 		if from == to {
-			scanner := bufio.NewScanner(decodedBody)
-			scanner.Buffer(nil, 52_428_800) // 50MB
-			for scanner.Scan() {
-				line := scanner.Bytes()
+			sseReader := NewSSELineReader(decodedBody)
+			for {
+				line, errRead := sseReader.ReadLine()
+				if line != nil {
+					appendAPIResponseChunk(ctx, e.cfg, line)
+					if detail, ok := parseClaudeStreamUsage(line); ok {
+						reporter.publish(ctx, detail)
+					}
+					if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
+						line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
+					}
+					// Forward the line as-is to preserve SSE format
+					out <- cliproxyexecutor.StreamChunk{Payload: append(line, '\n')}
+				}
+				if errRead != nil {
+					if errRead != io.EOF {
+						recordAPIResponseError(ctx, e.cfg, errRead)
+						reporter.publishFailure(ctx)
+						out <- cliproxyexecutor.StreamChunk{Err: errRead}
+					}
+					break
+				}
+			}
+			return
+		}
+
+		// For other formats, use translation
+		sseReader := NewSSELineReader(decodedBody)
+		var param any
+		for {
+			line, errRead := sseReader.ReadLine()
+			if line != nil {
 				appendAPIResponseChunk(ctx, e.cfg, line)
 				if detail, ok := parseClaudeStreamUsage(line); ok {
 					reporter.publish(ctx, detail)
@@ -404,51 +432,28 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 					line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
 				}
-				// Forward the line as-is to preserve SSE format
-				cloned := make([]byte, len(line)+1)
-				copy(cloned, line)
-				cloned[len(line)] = '\n'
-				out <- cliproxyexecutor.StreamChunk{Payload: cloned}
+				chunks := sdktranslator.TranslateStream(
+					ctx,
+					to,
+					from,
+					req.Model,
+					opts.OriginalRequest,
+					bodyForTranslation,
+					line,
+					&param,
+				)
+				for i := range chunks {
+					out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+				}
 			}
-			if errScan := scanner.Err(); errScan != nil {
-				recordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.publishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			if errRead != nil {
+				if errRead != io.EOF {
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					reporter.publishFailure(ctx)
+					out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				}
+				break
 			}
-			return
-		}
-
-		// For other formats, use translation
-		scanner := bufio.NewScanner(decodedBody)
-		scanner.Buffer(nil, 52_428_800) // 50MB
-		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			appendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := parseClaudeStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
-			}
-			if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
-				line = stripClaudeToolPrefixFromStreamLine(line, claudeToolPrefix)
-			}
-			chunks := sdktranslator.TranslateStream(
-				ctx,
-				to,
-				from,
-				req.Model,
-				opts.OriginalRequest,
-				bodyForTranslation,
-				bytes.Clone(line),
-				&param,
-			)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
-			}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

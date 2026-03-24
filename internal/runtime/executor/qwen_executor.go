@@ -1,7 +1,7 @@
 package executor
 
 import (
-	"bufio"
+
 	"bytes"
 	"context"
 	"fmt"
@@ -410,28 +410,32 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				log.Errorf("qwen executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 52_428_800) // 50MB
+		sseReader := NewSSELineReader(httpResp.Body)
 		var param any
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			appendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := parseOpenAIStreamUsage(line); ok {
-				reporter.publish(ctx, detail)
+		for {
+			line, errRead := sseReader.ReadLine()
+			if line != nil {
+				appendAPIResponseChunk(ctx, e.cfg, line)
+				if detail, ok := parseOpenAIStreamUsage(line); ok {
+					reporter.publish(ctx, detail)
+				}
+				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, line, &param)
+				for i := range chunks {
+					out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+				}
 			}
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, bytes.Clone(line), &param)
-			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+			if errRead != nil {
+				if errRead != io.EOF {
+					recordAPIResponseError(ctx, e.cfg, errRead)
+					reporter.publishFailure(ctx)
+					out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				}
+				break
 			}
 		}
 		doneChunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, body, []byte("[DONE]"), &param)
 		for i := range doneChunks {
 			out <- cliproxyexecutor.StreamChunk{Payload: doneChunks[i]}
-		}
-		if errScan := scanner.Err(); errScan != nil {
-			recordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.publishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
