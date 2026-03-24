@@ -3,7 +3,7 @@
 package chat_completions
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -153,18 +153,18 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				// system -> request.systemInstruction as a user message style
 				if content.Type == gjson.String {
 					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", systemPartIndex), content.String())
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(systemPartIndex)+".text", content.String())
 					systemPartIndex++
 				} else if content.IsObject() && content.Get("type").String() == "text" {
 					out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
-					out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", systemPartIndex), content.Get("text").String())
+					out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(systemPartIndex)+".text", content.Get("text").String())
 					systemPartIndex++
 				} else if content.IsArray() {
 					contents := content.Array()
 					if len(contents) > 0 {
 						out, _ = sjson.SetBytes(out, "request.systemInstruction.role", "user")
 						for j := 0; j < len(contents); j++ {
-							out, _ = sjson.SetBytes(out, fmt.Sprintf("request.systemInstruction.parts.%d.text", systemPartIndex), contents[j].Get("text").String())
+							out, _ = sjson.SetBytes(out, "request.systemInstruction.parts."+itoa(systemPartIndex)+".text", contents[j].Get("text").String())
 							systemPartIndex++
 						}
 					}
@@ -451,5 +451,5 @@ func ConvertOpenAIRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	return common.AttachDefaultSafetySettings(out, "request.safetySettings")
 }
 
-// itoa converts int to string without strconv import for few usages.
-func itoa(i int) string { return fmt.Sprintf("%d", i) }
+// itoa converts int to string.
+func itoa(i int) string { return strconv.Itoa(i) }

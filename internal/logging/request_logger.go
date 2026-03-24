@@ -417,6 +417,12 @@ func (l *FileRequestLogger) generateFilename(url string, requestID ...string) st
 //
 // Returns:
 //   - string: A sanitized filename
+// Pre-compiled regexes for filename sanitization.
+var (
+	reFilenameUnsafe    = regexp.MustCompile(`[<>:"|?*\s]`)
+	reConsecutiveHyphen = regexp.MustCompile(`-+`)
+)
+
 func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 	// Replace slashes with hyphens
 	sanitized := strings.ReplaceAll(path, "/", "-")
@@ -425,12 +431,10 @@ func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 	sanitized = strings.ReplaceAll(sanitized, ":", "-")
 
 	// Replace other problematic characters with hyphens
-	reg := regexp.MustCompile(`[<>:"|?*\s]`)
-	sanitized = reg.ReplaceAllString(sanitized, "-")
+	sanitized = reFilenameUnsafe.ReplaceAllString(sanitized, "-")
 
 	// Remove multiple consecutive hyphens
-	reg = regexp.MustCompile(`-+`)
-	sanitized = reg.ReplaceAllString(sanitized, "-")
+	sanitized = reConsecutiveHyphen.ReplaceAllString(sanitized, "-")
 
 	// Remove leading/trailing hyphens
 	sanitized = strings.Trim(sanitized, "-")

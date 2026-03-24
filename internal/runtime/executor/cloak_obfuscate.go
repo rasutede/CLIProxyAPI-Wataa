@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
@@ -18,11 +19,25 @@ type SensitiveWordMatcher struct {
 	regex *regexp.Regexp
 }
 
+// matcherCache caches compiled matchers keyed by the joined word list.
+var matcherCache sync.Map // string -> *SensitiveWordMatcher
+
 // buildSensitiveWordMatcher compiles a regex from the word list.
+// Results are cached so repeated calls with the same word list reuse the compiled regex.
 // Words are sorted by length (longest first) for proper matching.
 func buildSensitiveWordMatcher(words []string) *SensitiveWordMatcher {
 	if len(words) == 0 {
 		return nil
+	}
+
+	// Build cache key from sorted words
+	sorted := make([]string, len(words))
+	copy(sorted, words)
+	sort.Strings(sorted)
+	cacheKey := strings.Join(sorted, "\x00")
+
+	if val, ok := matcherCache.Load(cacheKey); ok {
+		return val.(*SensitiveWordMatcher)
 	}
 
 	// Filter and normalize words
@@ -55,7 +70,9 @@ func buildSensitiveWordMatcher(words []string) *SensitiveWordMatcher {
 		return nil
 	}
 
-	return &SensitiveWordMatcher{regex: re}
+	matcher := &SensitiveWordMatcher{regex: re}
+	matcherCache.LoadOrStore(cacheKey, matcher)
+	return matcher
 }
 
 // obfuscateWord inserts a zero-width space after the first grapheme.

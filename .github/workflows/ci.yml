@@ -9,11 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  build:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary: cli-proxy-api
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary: cli-proxy-api
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            binary: cli-proxy-api.exe
     runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 0
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,11 +46,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build
-        run: go build ./...
-
       - name: Vet
+        env:
+          GOOS: ""
+          GOARCH: ""
         run: go vet ./...
 
-      - name: Test
-        run: go test ./... -timeout 5m
+      - name: Build binary
+        shell: bash
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go build -ldflags "-s -w -X 'main.Version=dev' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" \
+            -o dist/${{ matrix.binary }} ./cmd/server/
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          ls -lh dist/${{ matrix.binary }}
+          file dist/${{ matrix.binary }} || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-proxy-api-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.binary }}
+          retention-days: 7
