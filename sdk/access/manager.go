@@ -3,18 +3,20 @@ package access
 import (
 	"context"
 	"net/http"
-	"sync"
+	"sync/atomic"
 )
 
 // Manager coordinates authentication providers.
+// Uses atomic.Value for lock-free reads on the hot authentication path.
 type Manager struct {
-	mu        sync.RWMutex
-	providers []Provider
+	providers atomic.Value // stores []Provider
 }
 
 // NewManager constructs an empty manager.
 func NewManager() *Manager {
-	return &Manager{}
+	m := &Manager{}
+	m.providers.Store([]Provider(nil))
+	return m
 }
 
 // SetProviders replaces the active provider list.
@@ -24,21 +26,17 @@ func (m *Manager) SetProviders(providers []Provider) {
 	}
 	cloned := make([]Provider, len(providers))
 	copy(cloned, providers)
-	m.mu.Lock()
-	m.providers = cloned
-	m.mu.Unlock()
+	m.providers.Store(cloned)
 }
 
-// Providers returns a snapshot of the active providers.
+// Providers returns the active providers.
+// The returned slice must not be modified by callers.
 func (m *Manager) Providers() []Provider {
 	if m == nil {
 		return nil
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	snapshot := make([]Provider, len(m.providers))
-	copy(snapshot, m.providers)
-	return snapshot
+	p, _ := m.providers.Load().([]Provider)
+	return p
 }
 
 // Authenticate evaluates providers until one succeeds.

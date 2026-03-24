@@ -255,12 +255,15 @@ func getAvailableAuths(auths []*Auth, provider, model string, now time.Time) ([]
 func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
 	now := time.Now()
+	// Filtering and grouping are done outside the lock to reduce contention.
 	available, err := getAvailableAuths(auths, provider, model, now)
 	if err != nil {
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	key := provider + ":" + canonicalModelKey(model)
+	groups, parentOrder := groupByVirtualParent(available)
+
 	s.mu.Lock()
 	if s.cursors == nil {
 		s.cursors = make(map[string]int)
@@ -272,7 +275,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 
 	// Check if any available auth has gemini_virtual_parent attribute,
 	// indicating gemini-cli virtual auths that should use credential-level polling.
-	groups, parentOrder := groupByVirtualParent(available)
 	if len(parentOrder) > 1 {
 		// Two-level round-robin: first select a credential group, then pick within it.
 		groupKey := key + "::group"

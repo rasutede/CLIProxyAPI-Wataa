@@ -69,10 +69,6 @@ func NewResponseWriterWrapper(w gin.ResponseWriter, logger logging.RequestLogger
 // CRITICAL: This method prioritizes writing to the client to ensure zero latency,
 // handling logging operations subsequently.
 func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
-	// Ensure headers are captured before first write
-	// This is critical because Write() may trigger WriteHeader() internally
-	w.ensureHeadersCaptured()
-
 	// CRITICAL: Write to client first (zero latency)
 	n, err := w.ResponseWriter.Write(data)
 
@@ -119,8 +115,6 @@ func (w *ResponseWriterWrapper) shouldBufferResponseBody() bool {
 // Some handlers (and fmt/io helpers) write via io.StringWriter; without this override, those writes
 // bypass Write() and would be missing from request logs.
 func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
-	w.ensureHeadersCaptured()
-
 	// CRITICAL: Write to client first (zero latency)
 	n, err := w.ResponseWriter.WriteString(data)
 

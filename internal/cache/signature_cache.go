@@ -139,16 +139,18 @@ func GetCachedSignature(modelName, text string) string {
 
 	now := time.Now()
 
-	sc.mu.Lock()
+	sc.mu.RLock()
 	entry, exists := sc.entries[textHash]
+	sc.mu.RUnlock()
+
 	if !exists {
-		sc.mu.Unlock()
 		if groupKey == "gemini" {
 			return "skip_thought_signature_validator"
 		}
 		return ""
 	}
 	if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+		sc.mu.Lock()
 		delete(sc.entries, textHash)
 		sc.mu.Unlock()
 		if groupKey == "gemini" {
@@ -158,8 +160,11 @@ func GetCachedSignature(modelName, text string) string {
 	}
 
 	// Refresh TTL on access (sliding expiration).
-	entry.Timestamp = now
-	sc.entries[textHash] = entry
+	sc.mu.Lock()
+	if e, ok := sc.entries[textHash]; ok {
+		e.Timestamp = now
+		sc.entries[textHash] = e
+	}
 	sc.mu.Unlock()
 
 	return entry.Signature
