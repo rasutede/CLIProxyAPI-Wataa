@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	apiAttemptsKey = "API_UPSTREAM_ATTEMPTS"
-	apiRequestKey  = "API_REQUEST"
-	apiResponseKey = "API_RESPONSE"
+	apiAttemptsKey     = "API_UPSTREAM_ATTEMPTS"
+	apiRequestKey      = "API_REQUEST"
+	apiResponseKey     = "API_RESPONSE"
+	apiResponseDirty   = "API_RESPONSE_DIRTY"
 )
 
 // upstreamRequestLog captures the outbound upstream request details for logging.
@@ -105,7 +106,7 @@ func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 	if ginCtx == nil {
 		return
 	}
-	attempts, attempt := ensureAttempt(ginCtx)
+	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
 	if status > 0 && !attempt.statusWritten {
@@ -119,7 +120,7 @@ func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 		attempt.response.WriteString("\n")
 	}
 
-	updateAggregatedResponse(ginCtx, attempts)
+	markResponseDirty(ginCtx)
 }
 
 // recordAPIResponseError adds an error entry for the latest attempt when no HTTP response is available.
@@ -131,7 +132,7 @@ func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 	if ginCtx == nil {
 		return
 	}
-	attempts, attempt := ensureAttempt(ginCtx)
+	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
 	if attempt.bodyStarted && !attempt.bodyHasContent {
@@ -144,10 +145,11 @@ func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 	attempt.response.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
 	attempt.errorWritten = true
 
-	updateAggregatedResponse(ginCtx, attempts)
+	markResponseDirty(ginCtx)
 }
 
 // appendAPIResponseChunk appends an upstream response chunk to Gin context for request logging.
+// The aggregated response is built lazily when read, not on every chunk append.
 func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byte) {
 	if cfg == nil || !cfg.RequestLog {
 		return
@@ -160,7 +162,7 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if ginCtx == nil {
 		return
 	}
-	attempts, attempt := ensureAttempt(ginCtx)
+	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
 	if !attempt.headersWritten {
@@ -179,7 +181,8 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	attempt.response.WriteString(string(data))
 	attempt.bodyHasContent = true
 
-	updateAggregatedResponse(ginCtx, attempts)
+	// Mark response as dirty so it gets rebuilt on next read.
+	markResponseDirty(ginCtx)
 }
 
 func ginContextFrom(ctx context.Context) *gin.Context {
@@ -257,6 +260,34 @@ func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) 
 		}
 	}
 	ginCtx.Set(apiResponseKey, []byte(builder.String()))
+	ginCtx.Set(apiResponseDirty, false)
+}
+
+// markResponseDirty flags that the aggregated response needs rebuilding.
+// The actual rebuild is deferred until FlushAPIResponseLog is called,
+// avoiding O(n²) rebuilds when streaming chunks arrive one by one.
+func markResponseDirty(ginCtx *gin.Context) {
+	if ginCtx == nil {
+		return
+	}
+	ginCtx.Set(apiResponseDirty, true)
+}
+
+// FlushAPIResponseLog rebuilds the aggregated API response log if dirty.
+// Call this before reading API_RESPONSE from gin context (e.g. in Finalize).
+func FlushAPIResponseLog(ginCtx *gin.Context) {
+	if ginCtx == nil {
+		return
+	}
+	dirty, exists := ginCtx.Get(apiResponseDirty)
+	if !exists {
+		return
+	}
+	if isDirty, ok := dirty.(bool); !ok || !isDirty {
+		return
+	}
+	attempts := getAttempts(ginCtx)
+	updateAggregatedResponse(ginCtx, attempts)
 }
 
 func writeHeaders(builder *strings.Builder, headers http.Header) {
