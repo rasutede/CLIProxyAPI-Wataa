@@ -678,6 +678,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 // the field is absent and batching related operations.
 func prepareCodexRequestBody(body []byte, model string, stream bool) []byte {
 	body, _ = sjson.SetBytes(body, "model", model)
+	body, _ = sjson.SetBytes(body, "store", false)
 	if stream {
 		body, _ = sjson.SetBytes(body, "stream", true)
 	}
