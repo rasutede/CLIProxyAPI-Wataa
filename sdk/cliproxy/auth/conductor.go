@@ -1998,7 +1998,8 @@ func retryAfterFromError(err error) *time.Duration {
 	if retryAfter == nil {
 		return nil
 	}
-	return new(*retryAfter)
+	d := *retryAfter
+	return &d
 }
 
 func statusCodeFromResult(err *Error) int {

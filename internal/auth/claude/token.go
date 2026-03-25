@@ -66,8 +66,8 @@ func (ts *ClaudeTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	// Create the token file
-	f, err := os.Create(authFilePath)
+	// Create the token file with restricted permissions
+	f, err := os.OpenFile(authFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
 	}

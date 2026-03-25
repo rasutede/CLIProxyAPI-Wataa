@@ -317,11 +317,15 @@ type claudeErrorResponse struct {
 }
 
 func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claudeErrorResponse {
+	message := "unknown error"
+	if msg != nil && msg.Error != nil {
+		message = msg.Error.Error()
+	}
 	return claudeErrorResponse{
 		Type: "error",
 		Error: claudeErrorDetail{
 			Type:    "api_error",
-			Message: msg.Error.Error(),
+			Message: message,
 		},
 	}
 }

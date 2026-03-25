@@ -859,7 +859,7 @@ func (cfg *Config) SanitizeGeminiKeys() {
 	}
 
 	seen := make(map[string]struct{}, len(cfg.GeminiKey))
-	out := cfg.GeminiKey[:0]
+	out := make([]GeminiKey, 0, len(cfg.GeminiKey))
 	for i := range cfg.GeminiKey {
 		entry := cfg.GeminiKey[i]
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
