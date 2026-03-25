@@ -169,28 +169,36 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
 
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
+	// Scan for the response.completed event using a byte-level pre-check
+	// to avoid gjson parsing on every SSE line.
+	completedMarker := []byte(`"response.completed"`)
+	for _, line := range bytes.Split(data, []byte("\n")) {
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
+		payload := bytes.TrimSpace(line[5:])
+		// Strip trailing \r from \r\n line endings.
+		payload = bytes.TrimRight(payload, "\r")
 
-		line = bytes.TrimSpace(line[5:])
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
+		// Fast skip: if the line doesn't contain the completion marker, skip JSON parsing.
+		if !bytes.Contains(payload, completedMarker) {
+			continue
+		}
+		if gjson.GetBytes(payload, "type").String() != "response.completed" {
 			continue
 		}
 
-		if detail, ok := parseCodexUsage(line); ok {
+		if detail, ok := parseCodexUsage(payload); ok {
 			reporter.publish(ctx, detail)
 		}
 
 		if isResponsesFastPath {
 			// Fast path: codex → openai-response is passthrough for non-stream.
-			resp = cliproxyexecutor.Response{Payload: line, Headers: httpResp.Header.Clone()}
+			resp = cliproxyexecutor.Response{Payload: payload, Headers: httpResp.Header.Clone()}
 			return resp, nil
 		}
 		var param any
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
+		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, payload, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 		return resp, nil
 	}
@@ -386,13 +394,14 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 		}()
 		sseReader := NewSSELineReader(httpResp.Body)
+		completedMarker := []byte(`"response.completed"`)
 		var param any
 		for {
 			line, errRead := sseReader.ReadLine()
 			if line != nil {
 				appendAPIResponseChunk(ctx, e.cfg, line)
 
-				if bytes.HasPrefix(line, dataTag) {
+				if bytes.HasPrefix(line, dataTag) && bytes.Contains(line, completedMarker) {
 					data := bytes.TrimSpace(line[5:])
 					if gjson.GetBytes(data, "type").String() == "response.completed" {
 						if detail, ok := parseCodexUsage(data); ok {
