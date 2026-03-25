@@ -92,21 +92,31 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	isResponsesFastPath := from.String() == "openai-response"
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return resp, err
+	var body []byte
+	if isResponsesFastPath {
+		// Fast path: openai-response → codex is nearly identical.
+		// Apply only the minimal adjustments that the executor requires,
+		// skipping the full translator pipeline and its intermediate allocations.
+		body = req.Payload
+	} else {
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+		body = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		if err != nil {
+			return resp, err
+		}
+
+		requestedModel := payloadRequestedModel(opts, req.Model)
+		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
@@ -180,6 +190,11 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			reporter.publish(ctx, detail)
 		}
 
+		if isResponsesFastPath {
+			// Fast path: codex → openai-response is passthrough for non-stream.
+			resp = cliproxyexecutor.Response{Payload: line, Headers: httpResp.Header.Clone()}
+			return resp, nil
+		}
 		var param any
 		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
 		resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
@@ -202,21 +217,28 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai-response")
+	isResponsesFastPath := from.String() == "openai-response"
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return resp, err
+	var body []byte
+	if isResponsesFastPath {
+		body = req.Payload
+	} else {
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
+		body = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		if err != nil {
+			return resp, err
+		}
+
+		requestedModel := payloadRequestedModel(opts, req.Model)
+		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 
@@ -292,21 +314,28 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
+	isResponsesFastPath := from.String() == "openai-response"
 	originalPayloadSource := req.Payload
 	if len(opts.OriginalRequest) > 0 {
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return nil, err
+	var body []byte
+	if isResponsesFastPath {
+		body = req.Payload
+	} else {
+		originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
+		body = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+
+		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		if err != nil {
+			return nil, err
+		}
+
+		requestedModel := payloadRequestedModel(opts, req.Model)
+		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
@@ -384,9 +413,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 				}
 
-				chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
-				for i := range chunks {
-					out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+				if isResponsesFastPath {
+					// Fast path: codex → openai-response stream is passthrough.
+					// Forward the line directly with a newline, skipping the translator.
+					out <- cliproxyexecutor.StreamChunk{Payload: append(line, '\n')}
+				} else {
+					chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
+					for i := range chunks {
+						out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+					}
 				}
 			}
 			if errRead != nil {
@@ -407,11 +442,18 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("codex")
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
 
-	body, err := thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
+	var body []byte
+	if from.String() == "openai-response" {
+		body = req.Payload
+	} else {
+		body = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
+
+		var err error
+		body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+		if err != nil {
+			return cliproxyexecutor.Response{}, err
+		}
 	}
 
 	body, _ = sjson.SetBytes(body, "model", baseModel)
