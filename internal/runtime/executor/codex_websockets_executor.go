@@ -121,11 +121,12 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	if s == nil {
 		return fmt.Errorf("codex websockets executor: session is nil")
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	// Check conn inside the lock to prevent race with invalidateUpstreamConn.
 	if conn == nil {
 		return fmt.Errorf("codex websockets executor: websocket conn is nil")
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	return conn.WriteMessage(msgType, payload)
 }
 

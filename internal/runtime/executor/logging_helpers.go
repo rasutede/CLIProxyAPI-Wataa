@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,10 +20,11 @@ import (
 )
 
 const (
-	apiAttemptsKey     = "API_UPSTREAM_ATTEMPTS"
-	apiRequestKey      = "API_REQUEST"
-	apiResponseKey     = "API_RESPONSE"
-	apiResponseDirty   = "API_RESPONSE_DIRTY"
+	apiAttemptsKey   = "API_UPSTREAM_ATTEMPTS"
+	apiRequestKey    = "API_REQUEST"
+	apiResponseKey   = "API_RESPONSE"
+	apiResponseDirty = "API_RESPONSE_DIRTY"
+	apiLogMuKey      = "API_LOG_MU"
 )
 
 // upstreamRequestLog captures the outbound upstream request details for logging.
@@ -59,6 +61,10 @@ func recordAPIRequest(ctx context.Context, cfg *config.Config, info upstreamRequ
 	if ginCtx == nil {
 		return
 	}
+
+	mu := ginLogMu(ginCtx)
+	mu.Lock()
+	defer mu.Unlock()
 
 	attempts := getAttempts(ginCtx)
 	index := len(attempts) + 1
@@ -106,6 +112,9 @@ func recordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status i
 	if ginCtx == nil {
 		return
 	}
+	mu := ginLogMu(ginCtx)
+	mu.Lock()
+	defer mu.Unlock()
 	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
@@ -132,6 +141,9 @@ func recordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 	if ginCtx == nil {
 		return
 	}
+	mu := ginLogMu(ginCtx)
+	mu.Lock()
+	defer mu.Unlock()
 	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
@@ -162,6 +174,9 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 	if ginCtx == nil {
 		return
 	}
+	mu := ginLogMu(ginCtx)
+	mu.Lock()
+	defer mu.Unlock()
 	_, attempt := ensureAttempt(ginCtx)
 	ensureResponseIntro(attempt)
 
@@ -188,6 +203,21 @@ func appendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 func ginContextFrom(ctx context.Context) *gin.Context {
 	ginCtx, _ := ctx.Value("gin").(*gin.Context)
 	return ginCtx
+}
+
+// ginLogMu returns the per-request mutex for protecting concurrent gin context access
+// from streaming goroutines. The mutex is lazily initialized on first call.
+// IMPORTANT: this function itself is called before goroutines spawn (in middleware),
+// so the initial Set is safe. Subsequent calls from goroutines use the stored pointer.
+func ginLogMu(ginCtx *gin.Context) *sync.Mutex {
+	if val, exists := ginCtx.Get(apiLogMuKey); exists {
+		if mu, ok := val.(*sync.Mutex); ok {
+			return mu
+		}
+	}
+	mu := &sync.Mutex{}
+	ginCtx.Set(apiLogMuKey, mu)
+	return mu
 }
 
 func getAttempts(ginCtx *gin.Context) []*upstreamAttempt {
@@ -279,6 +309,9 @@ func FlushAPIResponseLog(ginCtx *gin.Context) {
 	if ginCtx == nil {
 		return
 	}
+	mu := ginLogMu(ginCtx)
+	mu.Lock()
+	defer mu.Unlock()
 	dirty, exists := ginCtx.Get(apiResponseDirty)
 	if !exists {
 		return

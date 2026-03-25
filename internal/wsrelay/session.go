@@ -161,6 +161,7 @@ func (s *session) request(ctx context.Context, msg Message) (<-chan Message, err
 				actual.(*pendingRequest).close()
 			}
 		case <-s.closed:
+			// Session closed; cleanup() already handles all pending requests.
 		}
 	}()
 	return req.ch, nil

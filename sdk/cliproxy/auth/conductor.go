@@ -161,6 +161,7 @@ type Manager struct {
 	rtProvider RoundTripperProvider
 
 	// Auto refresh state
+	refreshMu        sync.Mutex
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
 }
@@ -2497,12 +2498,14 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	if interval <= 0 {
 		interval = refreshCheckInterval
 	}
+	m.refreshMu.Lock()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 		m.refreshCancel = nil
 	}
 	ctx, cancel := context.WithCancel(parent)
 	m.refreshCancel = cancel
+	m.refreshMu.Unlock()
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -2520,10 +2523,12 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 
 // StopAutoRefresh cancels the background refresh loop, if running.
 func (m *Manager) StopAutoRefresh() {
+	m.refreshMu.Lock()
 	if m.refreshCancel != nil {
 		m.refreshCancel()
 		m.refreshCancel = nil
 	}
+	m.refreshMu.Unlock()
 }
 
 func (m *Manager) checkRefreshes(ctx context.Context) {
