@@ -118,13 +118,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		requestedModel := payloadRequestedModel(opts, req.Model)
 		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.SetBytes(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body = normalizeCodexInstructions(body)
-	body = normalizeCodexBuiltinTools(body)
+	body = prepareCodexRequestBody(body, baseModel, true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -239,10 +233,8 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		requestedModel := payloadRequestedModel(opts, req.Model)
 		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = prepareCodexRequestBody(body, baseModel, false)
 	body, _ = sjson.DeleteBytes(body, "stream")
-	body = normalizeCodexInstructions(body)
-	body = normalizeCodexBuiltinTools(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -338,12 +330,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		requestedModel := payloadRequestedModel(opts, req.Model)
 		body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
 	}
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body = normalizeCodexInstructions(body)
-	body = normalizeCodexBuiltinTools(body)
+	body = prepareCodexRequestBody(body, baseModel, true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -457,12 +444,8 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 		}
 	}
 
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
+	body = prepareCodexRequestBody(body, baseModel, false)
 	body, _ = sjson.SetBytes(body, "stream", false)
-	body = normalizeCodexInstructions(body)
 
 	enc, err := tokenizerForCodexModel(baseModel)
 	if err != nil {
@@ -678,6 +661,32 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+// prepareCodexRequestBody applies all common Codex field mutations in a single pass.
+// When stream is true, it sets stream=true; the caller handles stream=false or delete separately.
+// This reduces per-request sjson allocations from 6-8 to 2-3 by skipping deletes when
+// the field is absent and batching related operations.
+func prepareCodexRequestBody(body []byte, model string, stream bool) []byte {
+	body, _ = sjson.SetBytes(body, "model", model)
+	if stream {
+		body, _ = sjson.SetBytes(body, "stream", true)
+	}
+
+	// Conditional deletes: only allocate when the field actually exists.
+	if gjson.GetBytes(body, "previous_response_id").Exists() {
+		body, _ = sjson.DeleteBytes(body, "previous_response_id")
+	}
+	if gjson.GetBytes(body, "prompt_cache_retention").Exists() {
+		body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
+	}
+	if gjson.GetBytes(body, "safety_identifier").Exists() {
+		body, _ = sjson.DeleteBytes(body, "safety_identifier")
+	}
+
+	body = normalizeCodexInstructions(body)
+	body = normalizeCodexBuiltinTools(body)
+	return body
 }
 
 // normalizeCodexInstructions ensures the instructions field is a non-null string.
