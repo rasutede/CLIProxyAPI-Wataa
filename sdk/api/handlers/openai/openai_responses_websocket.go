@@ -42,7 +42,17 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		// Allow localhost origins for CLI proxy use case
+		for _, allowed := range []string{"http://127.0.0.1", "http://localhost", "http://[::1]", "https://127.0.0.1", "https://localhost", "https://[::1]"} {
+			if origin == allowed || strings.HasPrefix(origin, allowed+":") {
+				return true
+			}
+		}
+		return false
 	},
 }
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -238,7 +239,8 @@ func (s *OAuthServer) handleSuccess(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	setupRequired := query.Get("setup_required") == "true"
 	platformURL := query.Get("platform_url")
-	if platformURL == "" {
+	// Validate platform_url to prevent open redirect attacks
+	if platformURL == "" || !isAllowedPlatformURL(platformURL) {
 		platformURL = "https://console.anthropic.com/"
 	}
 
@@ -290,6 +292,16 @@ func (s *OAuthServer) sendResult(result *OAuthResult) {
 	default:
 		log.Warn("OAuth result channel is full, result dropped")
 	}
+}
+
+// isAllowedPlatformURL validates that the given URL belongs to an allowed Anthropic domain.
+func isAllowedPlatformURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "console.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
 }
 
 // isPortAvailable checks if the specified port is available.

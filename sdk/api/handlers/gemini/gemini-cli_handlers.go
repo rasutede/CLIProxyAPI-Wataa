@@ -9,8 +9,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,7 +49,8 @@ func (h *GeminiCLIAPIHandler) Models() []map[string]any {
 // CLIHandler handles CLI-specific requests for Gemini API operations.
 // It restricts access to localhost only and routes requests to appropriate internal handlers.
 func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
-	if !strings.HasPrefix(c.Request.RemoteAddr, "127.0.0.1:") {
+	host, _, _ := net.SplitHostPort(c.Request.RemoteAddr)
+	if host != "127.0.0.1" && host != "::1" {
 		c.JSON(http.StatusForbidden, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{
 				Message: "CLI reply only allow local access",
@@ -78,8 +79,19 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 			})
 			return
 		}
+		// Only forward safe headers to upstream, skip sensitive ones
+		safeHeaders := map[string]bool{
+			"Content-Type":     true,
+			"Accept":           true,
+			"Accept-Encoding":  true,
+			"User-Agent":       true,
+			"X-Goog-Api-Key":   true,
+			"X-Goog-Api-Client": true,
+		}
 		for key, value := range c.Request.Header {
-			req.Header[key] = value
+			if safeHeaders[key] {
+				req.Header[key] = value
+			}
 		}
 
 		httpClient := util.SetProxy(h.Cfg, &http.Client{})

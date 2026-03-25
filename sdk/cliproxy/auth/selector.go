@@ -87,7 +87,8 @@ func (e *modelCooldownError) Error() string {
 	payload := map[string]any{"error": errorBody}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Sprintf(`{"error":{"code":"model_cooldown","message":"%s"}}`, message)
+		msgBytes, _ := json.Marshal(message)
+		return fmt.Sprintf(`{"error":{"code":"model_cooldown","message":%s}}`, string(msgBytes))
 	}
 	return string(data)
 }
