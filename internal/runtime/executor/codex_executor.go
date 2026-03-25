@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -123,6 +124,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body = normalizeCodexInstructions(body)
+	body = normalizeCodexBuiltinTools(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -240,6 +242,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
+	body = normalizeCodexBuiltinTools(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -340,6 +343,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body = normalizeCodexInstructions(body)
+	body = normalizeCodexBuiltinTools(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -700,6 +704,55 @@ func normalizeCodexInstructions(body []byte) []byte {
 	}
 	if strings.TrimSpace(inst.String()) == "" {
 		body, _ = sjson.SetBytes(body, "instructions", "")
+	}
+	return body
+}
+
+// codexBuiltinToolAliases maps legacy/preview tool type names to their stable equivalents.
+var codexBuiltinToolAliases = map[string]string{
+	"web_search_preview":             "web_search",
+	"web_search_preview_2025_03_11":  "web_search",
+}
+
+// normalizeCodexBuiltinTools rewrites legacy/preview built-in tool type names
+// to the stable names expected by the Codex upstream. It first does a cheap
+// byte-level check to skip payloads that contain no aliased names at all.
+func normalizeCodexBuiltinTools(body []byte) []byte {
+	// Fast exit: if the payload doesn't contain any alias substring, skip entirely.
+	hasAlias := false
+	for alias := range codexBuiltinToolAliases {
+		if bytes.Contains(body, []byte(alias)) {
+			hasAlias = true
+			break
+		}
+	}
+	if !hasAlias {
+		return body
+	}
+
+	body = normalizeCodexToolsAtArray(body, "tools")
+	body = normalizeCodexToolAtPath(body, "tool_choice.type")
+	body = normalizeCodexToolsAtArray(body, "tool_choice.tools")
+	return body
+}
+
+func normalizeCodexToolsAtArray(body []byte, arrayPath string) []byte {
+	arr := gjson.GetBytes(body, arrayPath)
+	if !arr.IsArray() {
+		return body
+	}
+	for i, item := range arr.Array() {
+		_ = item
+		path := arrayPath + "." + strconv.Itoa(i) + ".type"
+		body = normalizeCodexToolAtPath(body, path)
+	}
+	return body
+}
+
+func normalizeCodexToolAtPath(body []byte, path string) []byte {
+	current := gjson.GetBytes(body, path).String()
+	if replacement, ok := codexBuiltinToolAliases[current]; ok {
+		body, _ = sjson.SetBytes(body, path, replacement)
 	}
 	return body
 }
