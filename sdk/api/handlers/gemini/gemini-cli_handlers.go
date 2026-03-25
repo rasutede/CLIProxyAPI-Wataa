@@ -94,7 +94,7 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 			}
 		}
 
-		httpClient := util.SetProxy(h.Cfg, &http.Client{})
+		httpClient := util.SetProxy(h.GetCfg(), &http.Client{})
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
