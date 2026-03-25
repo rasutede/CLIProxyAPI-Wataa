@@ -17,15 +17,22 @@ import (
 
 // utlsRoundTripper implements http.RoundTripper using utls with Chrome fingerprint
 // to bypass Cloudflare's TLS fingerprinting on Anthropic domains.
+// Uses sync.Map for lock-free reads on the hot path (cached connection hit).
 type utlsRoundTripper struct {
-	// mu protects the connections map and pending map
-	mu sync.Mutex
-	// connections caches HTTP/2 client connections per host
-	connections map[string]*http2.ClientConn
-	// pending tracks hosts that are currently being connected to (prevents race condition)
-	pending map[string]*sync.Cond
+	// connections caches HTTP/2 client connections per host (lock-free reads)
+	connections sync.Map // map[string]*http2.ClientConn
+	// pending provides per-host mutual exclusion for connection creation
+	pending sync.Map // map[string]*pendingEntry
 	// dialer is used to create network connections, supporting proxies
 	dialer proxy.Dialer
+}
+
+// pendingEntry synchronizes concurrent connection creation for a single host.
+type pendingEntry struct {
+	mu   sync.Mutex
+	conn *http2.ClientConn
+	err  error
+	done bool
 }
 
 // newUtlsRoundTripper creates a new utls-based round tripper with optional proxy support
@@ -41,57 +48,57 @@ func newUtlsRoundTripper(cfg *config.SDKConfig) *utlsRoundTripper {
 	}
 
 	return &utlsRoundTripper{
-		connections: make(map[string]*http2.ClientConn),
-		pending:     make(map[string]*sync.Cond),
-		dialer:      dialer,
+		dialer: dialer,
 	}
 }
 
 // getOrCreateConnection gets an existing connection or creates a new one.
-// It uses a per-host locking mechanism to prevent multiple goroutines from
-// creating connections to the same host simultaneously.
+// Hot path (cache hit) is lock-free via sync.Map.Load.
+// Cold path (cache miss) uses per-host locking to prevent duplicate connections.
 func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.ClientConn, error) {
-	t.mu.Lock()
-
-	// Check if connection exists and is usable
-	if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-		t.mu.Unlock()
-		return h2Conn, nil
-	}
-
-	// Check if another goroutine is already creating a connection
-	if cond, ok := t.pending[host]; ok {
-		// Wait for the other goroutine to finish
-		cond.Wait()
-		// Check if connection is now available
-		if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-			t.mu.Unlock()
+	// Fast path: check cached connection (lock-free)
+	if val, ok := t.connections.Load(host); ok {
+		if h2Conn := val.(*http2.ClientConn); h2Conn.CanTakeNewRequest() {
 			return h2Conn, nil
 		}
-		// Connection still not available, we'll create one
+		// Stale connection — remove it
+		t.connections.Delete(host)
 	}
 
-	// Mark this host as pending
-	cond := sync.NewCond(&t.mu)
-	t.pending[host] = cond
-	t.mu.Unlock()
+	// Slow path: create new connection with per-host mutual exclusion
+	entry := &pendingEntry{}
+	entry.mu.Lock()
 
-	// Create connection outside the lock
+	if actual, loaded := t.pending.LoadOrStore(host, entry); loaded {
+		// Another goroutine is already creating a connection for this host
+		entry.mu.Unlock() // unlock our unused entry
+		existing := actual.(*pendingEntry)
+		existing.mu.Lock() // wait for the creator to finish
+		existing.mu.Unlock()
+
+		// Check if connection is now available
+		if val, ok := t.connections.Load(host); ok {
+			if h2Conn := val.(*http2.ClientConn); h2Conn.CanTakeNewRequest() {
+				return h2Conn, nil
+			}
+		}
+		// Connection still not available — retry (recursive but bounded)
+		return t.getOrCreateConnection(host, addr)
+	}
+
+	// We won the race — create the connection
 	h2Conn, err := t.createConnection(host, addr)
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	// Remove pending marker and wake up waiting goroutines
-	delete(t.pending, host)
-	cond.Broadcast()
+	// Store result and wake up waiters
+	if err == nil {
+		t.connections.Store(host, h2Conn)
+	}
+	t.pending.Delete(host)
+	entry.mu.Unlock()
 
 	if err != nil {
 		return nil, err
 	}
-
-	// Store the new connection
-	t.connections[host] = h2Conn
 	return h2Conn, nil
 }
 
@@ -140,12 +147,10 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
-		// Connection failed, remove it from cache
-		t.mu.Lock()
-		if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
-			delete(t.connections, hostname)
+		// Connection failed, remove it from cache if it's still the same one
+		if cached, ok := t.connections.Load(hostname); ok && cached.(*http2.ClientConn) == h2Conn {
+			t.connections.Delete(hostname)
 		}
-		t.mu.Unlock()
 		return nil, err
 	}
 

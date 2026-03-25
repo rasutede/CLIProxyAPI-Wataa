@@ -478,12 +478,20 @@ func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string
 	return models
 }
 
-func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
+func discardStreamChunks(ctx context.Context, ch <-chan cliproxyexecutor.StreamChunk) {
 	if ch == nil {
 		return
 	}
 	go func() {
-		for range ch {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-ch:
+				if !ok {
+					return
+				}
+			}
 		}
 	}()
 }
@@ -605,13 +613,13 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		}
 		for _, chunk := range buffered {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(ctx,remaining)
 				return
 			}
 		}
 		for chunk := range remaining {
 			if ok := emit(chunk); !ok {
-				discardStreamChunks(remaining)
+				discardStreamChunks(ctx,remaining)
 				return
 			}
 		}
@@ -653,7 +661,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		buffered, closed, bootstrapErr := readStreamBootstrap(ctx, streamResult.Chunks)
 		if bootstrapErr != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx,streamResult.Chunks)
 				return nil, errCtx
 			}
 			if isRequestInvalidError(bootstrapErr) {
@@ -664,7 +672,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx,streamResult.Chunks)
 				return nil, bootstrapErr
 			}
 			if idx < len(execModels)-1 {
@@ -675,7 +683,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
-				discardStreamChunks(streamResult.Chunks)
+				discardStreamChunks(ctx,streamResult.Chunks)
 				lastErr = bootstrapErr
 				continue
 			}
@@ -686,7 +694,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
 			m.MarkResult(ctx, result)
-			discardStreamChunks(streamResult.Chunks)
+			discardStreamChunks(ctx,streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
 
@@ -1809,10 +1817,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
+
+	// Persist outside the critical section to avoid blocking Pick/Register during IO.
+	if authSnapshot != nil {
+		_ = m.persist(ctx, authSnapshot)
+	}
+
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
 	}

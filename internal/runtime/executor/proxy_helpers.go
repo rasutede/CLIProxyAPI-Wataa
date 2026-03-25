@@ -15,9 +15,9 @@ import (
 
 // optimizedTransport is a shared transport with connection pooling for non-proxy clients.
 var optimizedTransport = &http.Transport{
-	MaxIdleConns:        100,
-	MaxIdleConnsPerHost: 20,
-	IdleConnTimeout:     90 * time.Second,
+	MaxIdleConns:        500,
+	MaxIdleConnsPerHost: 100,
+	IdleConnTimeout:     120 * time.Second,
 	DisableCompression:  true,
 }
 
@@ -48,9 +48,9 @@ func getProxyClient(proxyURL string) *http.Client {
 		return nil
 	}
 	// Apply the same pool settings to proxy transports
-	transport.MaxIdleConns = 100
-	transport.MaxIdleConnsPerHost = 20
-	transport.IdleConnTimeout = 90 * time.Second
+	transport.MaxIdleConns = 500
+	transport.MaxIdleConnsPerHost = 100
+	transport.IdleConnTimeout = 120 * time.Second
 	transport.DisableCompression = true
 	client := &http.Client{Transport: transport}
 	actual, _ := proxyClients.LoadOrStore(proxyURL, client)

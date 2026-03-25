@@ -623,7 +623,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		}
 	}
 	chunks := streamResult.Chunks
-	dataChan := make(chan []byte)
+	dataChan := make(chan []byte, 64)
 	errChan := make(chan *interfaces.ErrorMessage, 1)
 	go func() {
 		defer close(dataChan)
@@ -731,7 +731,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 						}
 					}
 					sentPayload = true
-					if okSendData := sendData(cloneBytes(chunk.Payload)); !okSendData {
+					if okSendData := sendData(chunk.Payload); !okSendData {
 						return
 					}
 				}

@@ -317,10 +317,23 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 }
 
 // ensureCursorKey ensures the cursor map has capacity for the given key.
+// When the map reaches its limit, evicts half the entries instead of a full reset
+// to avoid disrupting all round-robin positions simultaneously.
 // Must be called with s.mu held.
 func (s *RoundRobinSelector) ensureCursorKey(key string, limit int) {
-	if _, ok := s.cursors[key]; !ok && len(s.cursors) >= limit {
-		s.cursors = make(map[string]int)
+	if _, ok := s.cursors[key]; ok {
+		return
+	}
+	if len(s.cursors) >= limit {
+		count := 0
+		half := len(s.cursors) / 2
+		for k := range s.cursors {
+			if count >= half {
+				break
+			}
+			delete(s.cursors, k)
+			count++
+		}
 	}
 }
 
