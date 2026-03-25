@@ -140,7 +140,10 @@ func (s *Service) consumeAuthUpdates(ctx context.Context) {
 		labelDrain:
 			for {
 				select {
-				case nextUpdate := <-s.authUpdates:
+				case nextUpdate, ok := <-s.authUpdates:
+					if !ok {
+						return
+					}
 					s.handleAuthUpdate(ctx, nextUpdate)
 				default:
 					break labelDrain

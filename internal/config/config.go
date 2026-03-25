@@ -604,7 +604,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed)
+		if errPersist := SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed); errPersist != nil {
+			log.Warnf("failed to persist hashed remote management secret: %v", errPersist)
+		}
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -1026,25 +1028,37 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
 	normalizeCollectionNodeStyles(original.Content[0])
 
-	// Write back.
-	f, err := os.Create(configFile)
+	// Write back atomically: write to temp file, then rename.
+	tmpFile := configFile + ".tmp"
+	f, err := os.Create(tmpFile)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err = enc.Encode(&original); err != nil {
 		_ = enc.Close()
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
 		return err
 	}
 	if err = enc.Close(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
 		return err
 	}
 	data = NormalizeCommentIndentation(buf.Bytes())
-	_, err = f.Write(data)
-	return err
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	return os.Rename(tmpFile, configFile)
 }
 
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
@@ -1079,24 +1093,36 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 			node = next
 		}
 	}
-	f, err := os.Create(configFile)
+	tmpFile := configFile + ".tmp"
+	f, err := os.Create(tmpFile)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err = enc.Encode(&root); err != nil {
 		_ = enc.Close()
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
 		return err
 	}
 	if err = enc.Close(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
 		return err
 	}
 	data = NormalizeCommentIndentation(buf.Bytes())
-	_, err = f.Write(data)
-	return err
+	if _, err = f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	return os.Rename(tmpFile, configFile)
 }
 
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.

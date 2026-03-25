@@ -917,8 +917,13 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	s.applyAccessConfig(oldCfg, cfg)
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
-	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
-		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
+	if oldCfg != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
+		s.wsRouteMu.Lock()
+		fn := s.wsAuthChanged
+		s.wsRouteMu.Unlock()
+		if fn != nil {
+			fn(oldCfg.WebsocketAuth, cfg.WebsocketAuth)
+		}
 	}
 	managementasset.SetCurrentConfig(cfg)
 	// Save YAML snapshot for next comparison
@@ -976,7 +981,9 @@ func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {
 	if s == nil {
 		return
 	}
+	s.wsRouteMu.Lock()
 	s.wsAuthChanged = fn
+	s.wsRouteMu.Unlock()
 }
 
 // (management handlers moved to internal/api/handlers/management)

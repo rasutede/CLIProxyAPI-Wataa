@@ -60,7 +60,16 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		return
 	}
 
-	rawJSON, _ := c.GetRawData()
+	rawJSON, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("failed to read request body: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return
+	}
 	requestRawURI := c.Request.URL.Path
 
 	if requestRawURI == "/v1internal:generateContent" {
@@ -115,7 +124,7 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 			}()
 			bodyBytes, _ := io.ReadAll(resp.Body)
 
-			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
+			c.JSON(resp.StatusCode, handlers.ErrorResponse{
 				Error: handlers.ErrorDetail{
 					Message: string(bodyBytes),
 					Type:    "invalid_request_error",
@@ -148,13 +157,6 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context, rawJSON []byte) {
 	alt := h.GetAlt(c)
 
-	if alt == "" {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("Access-Control-Allow-Origin", "*")
-	}
-
 	// Get the http.Flusher interface to manually flush the response.
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
@@ -172,9 +174,41 @@ func (h *GeminiCLIAPIHandler) handleInternalStreamGenerateContent(c *gin.Context
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
 	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-	h.forwardCLIStream(c, flusher, "", func(err error) { cliCancel(err) }, dataChan, errChan)
-	return
+
+	// Peek at first result before committing headers
+	select {
+	case errMsg := <-errChan:
+		if errMsg != nil {
+			h.WriteErrorResponse(c, errMsg)
+			cliCancel(errMsg)
+			return
+		}
+	case firstChunk, ok := <-dataChan:
+		if !ok {
+			cliCancel()
+			return
+		}
+		// First chunk received successfully — commit SSE headers
+		if alt == "" {
+			c.Header("Content-Type", "text/event-stream")
+			c.Header("Cache-Control", "no-cache")
+			c.Header("Connection", "keep-alive")
+			c.Header("Access-Control-Allow-Origin", "*")
+		}
+		handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+
+		// Re-wrap first chunk and remaining data into a new channel
+		wrappedDataChan := make(chan []byte, cap(dataChan)+1)
+		wrappedDataChan <- firstChunk
+		go func() {
+			defer close(wrappedDataChan)
+			for chunk := range dataChan {
+				wrappedDataChan <- chunk
+			}
+		}()
+		h.forwardCLIStream(c, flusher, "", func(err error) { cliCancel(err) }, wrappedDataChan, errChan)
+		return
+	}
 }
 
 // handleInternalGenerateContent handles non-streaming content generation requests.
