@@ -122,9 +122,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
-	}
+	body = normalizeCodexInstructions(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -241,6 +239,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
+	body = normalizeCodexInstructions(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -340,9 +339,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
-	}
+	body = normalizeCodexInstructions(body)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
@@ -461,9 +458,7 @@ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.SetBytes(body, "stream", false)
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
-	}
+	body = normalizeCodexInstructions(body)
 
 	enc, err := tokenizerForCodexModel(baseModel)
 	if err != nil {
@@ -679,6 +674,34 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+// normalizeCodexInstructions ensures the instructions field is a non-null string.
+// Codex API rejects missing, null, or array-typed instructions.
+// - Missing/null → empty string
+// - Array → join elements with newline
+// - Whitespace-only string → empty string
+// - Normal string → trimmed
+func normalizeCodexInstructions(body []byte) []byte {
+	inst := gjson.GetBytes(body, "instructions")
+	if !inst.Exists() || inst.Type == gjson.Null {
+		body, _ = sjson.SetBytes(body, "instructions", "")
+		return body
+	}
+	if inst.IsArray() {
+		var parts []string
+		for _, item := range inst.Array() {
+			if s := strings.TrimSpace(item.String()); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		body, _ = sjson.SetBytes(body, "instructions", strings.Join(parts, "\n"))
+		return body
+	}
+	if strings.TrimSpace(inst.String()) == "" {
+		body, _ = sjson.SetBytes(body, "instructions", "")
+	}
+	return body
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
