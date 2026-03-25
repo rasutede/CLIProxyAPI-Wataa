@@ -121,7 +121,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body = prepareCodexRequestBody(body, baseModel, true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, body, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -203,6 +203,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, nil
 	}
 	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+	return resp, err
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
@@ -244,7 +245,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.DeleteBytes(body, "stream")
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
-	httpReq, body, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
 		return resp, err
 	}
@@ -340,7 +341,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = prepareCodexRequestBody(body, baseModel, true)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, body, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
 	if err != nil {
 		return nil, err
 	}
@@ -631,7 +632,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, []byte, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
 	var cache codexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
@@ -662,13 +663,13 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
 	if err != nil {
-		return nil, rawJSON, err
+		return nil, err
 	}
 	if cache.ID != "" {
 		httpReq.Header.Set("Conversation_id", cache.ID)
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
-	return httpReq, rawJSON, nil
+	return httpReq, nil
 }
 
 // prepareCodexRequestBody applies all common Codex field mutations in a single pass.
